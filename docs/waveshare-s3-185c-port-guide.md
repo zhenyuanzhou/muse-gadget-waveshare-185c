@@ -324,7 +324,125 @@ link.ble: advertising as MuseGadget-XXXXXX         ← BLE 在广播
 
 ---
 
-## 8. 配对与使用
+## 8. 案例：给固件加一个新命令（audio.play_url）
+
+这一章完整记录"从需求到真机验证"加一条 Muse 命令的全过程。
+v1.1 的 `audio.play_url`（Muse 推送 MP3 的 URL，板子下载后从喇叭播出来）
+就是按这个流程做的，已真机验证。学嵌入式最难的不是写代码，是
+**在陌生代码库里找到该改哪、能复用什么**——本章重点讲这个。
+
+### 8.1 需求与方案选择
+
+需求：让 Muse 聊天里的 AI 能"开口"，板子要把一段语音播出来。
+
+两个候选方案：
+
+| 方案 | 做法 | 为什么没选/选了 |
+|---|---|---|
+| 板载 TTS | 固件接第三方 TTS API，把回复文本合成语音 | 要 API key、要 HTTPS 请求、S3 算力紧张；Muse 官方注释（`muse_chat_session.cpp` 的 `start_tts`）也只是留了插槽没实现 |
+| **云端合成 + 板端播放**（选中） | Muse 把合成好的 MP3 通过 URL 推给板子，板子只管下载解码播放 | 板子零依赖，解码播放的轮子固件里全有 |
+
+### 8.2 第一步永远是读规范
+
+`esp32/AGENTS.md` 的 "Adding a command" 一节把规矩写得很死，
+照做就不会踩架构上的坑：
+
+1. 命令要出现在**两个同名的地方**：`noise_control.cpp` 的
+   `build_register_json()`（`add_command()` 注册）和 `app.c` 的
+   `on_ws_command()`（分发处理）；
+2. **不许阻塞**：`on_ws_command()` 跑在 Noise 会话任务上。下载这种慢操作
+   必须拷贝 `request_id` / `session_generation` / 参数到自己的任务，
+   立即返回 `{"_async": true}`，任务完成后调用
+   `noise_ctrl_send_command_result()` 回结果（成功失败都要回，不然
+   Muse 干等超时）；
+3. **参数自己校验**：固件不核对注册时声明的 required/optional，
+   `params` 可能是 NULL，每个参数查存在性、类型、长度；
+4. 需要特定硬件的命令用 **Kconfig 选项门控**，两处包同一个 `#if`；
+5. `link.register` 总上限 **8 KB**，命令描述别写长篇大论；
+6. 加一个 **host 测试**（`tests/`，纯源码检查即可，不需要板子）。
+
+### 8.3 找轮子：三个现成模块拼出新功能
+
+**下载** —— 照抄 `main/image_fetch.c`（`display.draw_url` 的下载器）：
+`esp_http_client` + `esp_crt_bundle_attach`（证书校验）、手动跟随
+重定向（禁自动跳转以固定协议）、总时限 + 单次超时、内部 RAM 下限保护
+（低于阈值中止，保住 Noise 会话和 lwIP）。
+
+**解码** —— `components/minimp3`（CC0 的 MP3 解码器，语音回复就在用）+
+ `muse_chat_session.cpp` 里现成的解码循环（`mp3dec_init` /
+`mp3dec_decode_frame` / 立体声转单声道 / Q16 定点线性插值重采样
+`resampler_init`/`resample`）。这段代码注释明确写着"把 TTS 的 MP3
+喂给 `tts_data()` 就行"——抄它的结构，别自己发明。
+
+**播放 + UI** —— `muse_audio_write()`（16 kHz 单声道阻塞写，
+音量走 UI 的设置）；屏显提示用
+`muse_state_set_mode(MUSE_MODE_SPEAKING)` + `muse_state_set_caption()` +
+播放时喂 `muse_state_set_level(muse_audio_level(...))`（音量条动画）。
+
+### 8.4 实现清单（6 个文件）
+
+1. **`main/audio_play.c/.h`** —— 核心模块，一个 48 KB **PSRAM 栈**任务
+   完成 下载→解码→播放 全流程（TLS 握手和 minimp3 都吃栈；参考
+   `muse_chat_session.cpp` 的会话任务同样用 48 KB PSRAM 栈跑 TLS）。
+   要点：原子 `s_busy` 标志拒绝并发播放；MP3 缓冲 1 MB（PSRAM，
+   够几分钟语音）；幂等调用 `muse_audio_power(true)`（编解码器休眠时
+   自动上电）；**只在 IDLE 态接管屏幕**（正在按住 BOOT 对话时只出声、
+   不抢 UI），播完恢复 IDLE + 空标题。
+2. **`main/Kconfig.projbuild`** —— 新选项 `HOMEHUB_AUDIO_PLAY_COMMAND`，
+   `default y if HOMEHUB_LED_BACKEND_MUSE && SPIRAM`（有完整 UI 的板子
+   才有 codec 通路和 PSRAM，条件与 `HOMEHUB_DISPLAY_COMMANDS` 相同）。
+3. **`main/noise_control.cpp`** —— `#if` 块里 `add_command()` 注册
+   + `"timeout_ms": 120000`（下载+播放可能超过默认 30 s）。
+4. **`main/app.c`** —— `#if` 块里分发：校验 url（http/https、≤1024
+   字符）→ 拷贝上下文 → `audio_play_start()` → 成功返回 `_async`，
+   失败返回 `command_error()`。
+5. **`main/CMakeLists.txt`** —— 源文件加入 `GADGET_SRCS`，`minimp3`
+   加进 `GADGET_REQUIRES`（main 本来就 `REQUIRES muse`，直接可调
+   `muse_audio_*`/`muse_state_*`）。
+6. **`tests/test_link_audio_play.py`** —— host 测试照
+   `test_link_sensecap_sensors.py` 的"源码检查"模式：断言注册/分发
+   在同一 `#if` 下、`_async` 存在、Kconfig 默认条件正确。
+
+### 8.5 编译：两个 -Werror 陷阱
+
+固件开了 `-Werror`，新增代码两个典型报错：
+
+- `maybe-uninitialized`：重采样器只在"采样率变化"分支初始化，GCC
+  证明不了必走该分支 → 定义时清零 `resampler_t rs = { 0 };`
+  （语义不变，只是安抚编译器）；
+- `format-zero-length`：`muse_state_set_caption("")` 是 printf 风格
+  函数，空格式串非法 → 抄上游 `muse_app.c` 的清法：
+  `muse_state_set_caption("%s", "")`。
+
+### 8.6 验证流程（不用重新配对）
+
+```bash
+python -m unittest tests.test_link_audio_play     # 1. host 测试
+powershell -File idf-ninja.ps1                    # 2. 编译（-j 4 低并发）
+powershell -File idf-run.ps1 -B build-muse-waveshare-s3-185c -Port COM4 -Cmd flash
+python capture_com.py COM4 25 reset               # 3. 抓启动日志
+```
+
+日志里要看到 `sent link.register (... bytes)`（远小于 8K 上限）和
+`link.register acked; tunnel may open`，无 panic。烧录不清 NVS，
+**Wi-Fi 和配对凭据都在**，Muse 重连后就能看到新命令，直接让它调
+`audio.play_url` 真机验证。
+
+### 8.7 本次的教训
+
+- **改别人 SDK 先找"插槽"**：`start_tts` 的注释、`AGENTS.md` 的
+  "Adding a command" 就是官方留的扩展点，顺着插槽走比重写整个链路稳。
+- **异步命令的内存归属是头号坑**：`on_ws_command()` 一返回请求就被
+  释放，参数和 ID 必须拷到自己的任务里（AGENTS.md 原话 +
+  `camera.capture`/`device.discover` 范例）。
+- **截断的 MP3 也能播**：下载中断时已缓冲部分照常解码，minimp3 遇到
+  不完整帧自然结束——"播放到手的部分"比"失败重来"体验好。
+- 上游 host 测试在 Windows 上有一批 GBK 编码的既有报错，与改动无关，
+  对比 `git stash` 前后的基线即可确认。
+
+---
+
+## 9. 配对与使用
 
 1. 手机装 Muse App → Settings → Devices → 打开 **Developer mode**；
 2. Add Device → 选 `MuseGadget-XXXXXX`；
@@ -336,7 +454,7 @@ link.ble: advertising as MuseGadget-XXXXXX         ← BLE 在广播
 
 ---
 
-## 9. 后续升级建议
+## 10. 后续升级建议
 
 ```bash
 git remote add upstream https://github.com/facebookincubator/muse-gadget-sdk.git
@@ -349,4 +467,6 @@ git fetch upstream && git rebase upstream/main   # 我们的改动在独立文�
 - `esp32/components/muse/boards/esp_lcd_st77916.c/.h` —— vendored 屏幕驱动
 - `esp32/components/muse/Kconfig` / `CMakeLists.txt` —— 注册板子
 - `esp32/devices/sdkconfig.muse-waveshare-s3-185c` —— 构建配置
+- `esp32/main/audio_play.c/.h` —— v1.1 新增：audio.play_url 命令
+- `esp32/tests/test_link_audio_play.py` —— 该命令的 host 测试
 - `docs/waveshare-s3-185c-port-guide.md` —— 本文
