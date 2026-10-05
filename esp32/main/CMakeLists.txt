@@ -37,6 +37,7 @@ set(GADGET_SRCS
     "pairing_signer_policy.c"
     "pairing_transcript.c"
     "factory_test.c"
+    "audio_play.c"
 )
 
 set(GADGET_REQUIRES
@@ -63,6 +64,7 @@ set(GADGET_REQUIRES
     mbedtls
     efuse
     muse
+    minimp3
     # The voice board's. Requirements are resolved before the configuration
     # is loaded, so this is unconditional; unused code is not linked.
     esp_driver_i2s

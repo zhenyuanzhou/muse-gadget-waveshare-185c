@@ -68,6 +68,9 @@
 #if CONFIG_HOMEHUB_SENSECAP_SENSORS
 #include "sensecap_sensors.h"
 #endif
+#if CONFIG_HOMEHUB_AUDIO_PLAY_COMMAND
+#include "audio_play.h"
+#endif
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
@@ -1554,6 +1557,33 @@ static void draw_url_done(const image_fetch_result_t *r, void *user) {
 }
 #endif
 
+#if CONFIG_HOMEHUB_AUDIO_PLAY_COMMAND
+// ---- Audio playback ----------------------------------------------------------
+
+typedef struct {
+    noise_ctrl_session_generation_t session_generation;
+    char request_id[64];
+} play_url_ctx_t;
+
+static void play_url_done(const audio_play_result_t *r, void *user) {
+    play_url_ctx_t *ctx = user;
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "ok", r->ok);
+    if (r->ok) {
+        cJSON *payload = cJSON_AddObjectToObject(result, "payload");
+        cJSON_AddNumberToObject(payload, "seconds", r->seconds);
+        cJSON_AddNumberToObject(payload, "bytes", (double)r->bytes);
+        cJSON_AddNumberToObject(payload, "ms", r->ms);
+    } else {
+        cJSON *error = cJSON_AddObjectToObject(result, "error");
+        cJSON_AddStringToObject(error, "code", r->code);
+        cJSON_AddStringToObject(error, "message", r->message);
+    }
+    noise_ctrl_send_command_result(ctx->session_generation, ctx->request_id, result);
+    free(ctx);
+}
+#endif
+
 #if CONFIG_MUSE_WATCHER_CAMERA
 typedef struct {
     noise_ctrl_session_generation_t session_generation;
@@ -1898,6 +1928,29 @@ static cJSON *on_ws_command(
 #if CONFIG_HOMEHUB_SENSECAP_SENSORS
     if (strcmp(command, "sensors.read") == 0) {
         return sensecap_sensors_command();
+    }
+#endif
+#if CONFIG_HOMEHUB_AUDIO_PLAY_COMMAND
+    if (strcmp(command, "audio.play_url") == 0) {
+        cJSON *url = cJSON_GetObjectItem(params, "url");
+        if (!cJSON_IsString(url) || !url->valuestring || !url->valuestring[0]) {
+            return command_error("missing_param", "url is required");
+        }
+        if (strlen(url->valuestring) > 1024) {
+            return command_error("invalid_params", "url is too long");
+        }
+        play_url_ctx_t *ctx = calloc(1, sizeof(*ctx));
+        if (!ctx) return command_error("out_of_memory", "failed to allocate");
+        ctx->session_generation = session_generation;
+        strncpy(ctx->request_id, request_id, sizeof(ctx->request_id) - 1);
+        const char *code, *message;
+        if (!audio_play_start(url->valuestring, play_url_done, ctx, &code, &message)) {
+            free(ctx);
+            return command_error(code, message);
+        }
+        cJSON *async = cJSON_CreateObject();
+        cJSON_AddBoolToObject(async, "_async", true);
+        return async;
     }
 #endif
     if (strcmp(command, "device.reset_vm") == 0) {

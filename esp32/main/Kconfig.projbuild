@@ -283,6 +283,15 @@ menu "ESP32 Device SDK"
             Set when display.draw_url can draw a downloaded image: the
             display backends, and boards with the full UI and PSRAM for the image.
 
+    config HOMEHUB_AUDIO_PLAY_COMMAND
+        bool
+        default y if HOMEHUB_LED_BACKEND_MUSE && SPIRAM
+        help
+            Set when audio.play_url can download an MP3 and play it through
+            the Muse speaker: boards with the full UI have the codec path and
+            PSRAM for the clip. The playback reuses the reply-speech codec
+            and the start_tts decode loop in muse_chat_session.cpp.
+
     config HOMEHUB_PRE_DVT_GPIO
         bool "Use pre-DVT GPIO assignments"
         depends on HOMEHUB_LED_BACKEND_PWM_RGB

@@ -1344,6 +1344,22 @@ static char *build_register_json(void) {
     }
 #endif
 
+#if CONFIG_HOMEHUB_AUDIO_PLAY_COMMAND
+    cJSON *play_required = cJSON_CreateObject();
+    cJSON_AddItemToObject(play_required, "url",
+                          string_param("http:// or https:// URL of a standard MP3. "
+                                       "It is downloaded, decoded and played through "
+                                       "the speaker; the screen shows a hint while it "
+                                       "plays. Only one clip plays at a time."));
+    add_command(commands, "audio.play_url",
+                "Download an MP3 and play it through the speaker. Returns the "
+                "played length in seconds once playback finishes.",
+                play_required, nullptr);
+    // A long clip downloads first, then plays for as long as it runs.
+    cJSON_AddNumberToObject(
+        cJSON_GetObjectItem(commands, "audio.play_url"), "timeout_ms", 120000);
+#endif
+
 #if CONFIG_HOMEHUB_VOICE
     cJSON *volume_optional = cJSON_CreateObject();
     cJSON *volume_param = cJSON_CreateObject();
