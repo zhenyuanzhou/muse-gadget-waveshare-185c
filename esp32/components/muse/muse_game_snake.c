@@ -39,9 +39,10 @@ static const char *TAG = "game_snake";
 
 #define CELL 15                 /* arena cell size, px */
 #define MAX_LEN 160             /* plenty: the circle holds ~90 cells on the 1.85C */
-#define START_MS 210            /* step interval at score 0 */
-#define MIN_MS 110              /* fastest step */
+#define START_MS 170            /* step interval at score 0 */
+#define MIN_MS 90               /* fastest step */
 #define SPEED_UP_MS 3           /* interval drop per food */
+#define DRAG_PX 16              /* px of drag that turns the snake */
 
 #define COLOR_BG        lv_color_hex(0x0b0f0a)
 #define COLOR_RIM       lv_color_hex(0x24352a)
@@ -82,6 +83,10 @@ static int s_len;
 static cell_t s_dir;            /* current heading */
 static cell_t s_queued;         /* one buffered turn */
 static bool s_has_queued;
+static bool s_turn_used;        /* a turn landed since the last step; the next
+                                 * one must wait for the step so a fast double
+                                 * swipe can't fold the snake into its neck */
+static lv_point_t s_drag;       /* where the current drag started */
 static cell_t s_food;
 static bool s_food_live;
 static state_t s_state = ST_READY;
@@ -146,6 +151,7 @@ static void snake_reset(void)
     s_snake[2] = (cell_t){ (int8_t)(c - 2), (int8_t)c };
     s_dir = (cell_t){ 1, 0 };
     s_has_queued = false;
+    s_turn_used = false;
     s_score = 0;
     s_step_ms = START_MS;
     s_tick = 0;
@@ -316,6 +322,7 @@ static void update_labels(void)
 static void step(void)
 {
     s_tick++;
+    s_turn_used = false;
 
     if (s_has_queued && !is_opposite(s_queued, s_dir)) {
         s_dir = s_queued;
@@ -382,6 +389,7 @@ static void queue_turn(cell_t d)
     if (s_state == ST_READY) {
         s_dir = d;
         s_state = ST_PLAYING;
+        s_turn_used = true;
         if (!s_food_live) {
             food_spawn();
         }
@@ -390,9 +398,55 @@ static void queue_turn(cell_t d)
         return;
     }
     if (s_state == ST_PLAYING && !is_opposite(d, s_dir) && !(d.x == s_dir.x && d.y == s_dir.y)) {
-        s_queued = d;
-        s_has_queued = true;
+        if (!s_turn_used) {
+            /* A step has run since the last turn, so the neck is a full cell
+             * away: take the turn now instead of waiting for the next step.
+             * This is what makes steering feel immediate. */
+            s_dir = d;
+            s_turn_used = true;
+            s_has_queued = false;
+        } else {
+            s_queued = d;
+            s_has_queued = true;
+        }
     }
+}
+
+/* Steering by drag: LVGL only fires GESTURE on release after 50 px, which
+ * feels dead on a 360 px screen. Track the press ourselves and turn as soon
+ * as the finger has moved DRAG_PX, re-anchoring so one drag can steer twice. */
+static bool steer_target(lv_event_t *e)
+{
+    lv_obj_t *t = lv_event_get_target(e);
+    return t == s_page || t == s_canvas || t == s_overlay_lbl || t == s_score_lbl;
+}
+
+static void on_pressed(lv_event_t *e)
+{
+    if (!steer_target(e)) {
+        return;
+    }
+    lv_indev_get_point(lv_event_get_indev(e), &s_drag);
+}
+
+static void on_pressing(lv_event_t *e)
+{
+    if (!steer_target(e)) {
+        return;
+    }
+    lv_point_t now;
+    lv_indev_get_point(lv_event_get_indev(e), &now);
+    int dx = now.x - s_drag.x;
+    int dy = now.y - s_drag.y;
+    if (LV_ABS(dx) < DRAG_PX && LV_ABS(dy) < DRAG_PX) {
+        return;
+    }
+    if (LV_ABS(dx) > LV_ABS(dy)) {
+        queue_turn((cell_t){ (int8_t)(dx > 0 ? 1 : -1), 0 });
+    } else {
+        queue_turn((cell_t){ 0, (int8_t)(dy > 0 ? 1 : -1) });
+    }
+    s_drag = now;
 }
 
 static void on_gesture(lv_event_t *e)
@@ -475,6 +529,8 @@ lv_obj_t *muse_game_snake_build(lv_obj_t *tile, void (*on_exit)(void))
     lv_obj_remove_flag(s_page, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(s_page, on_gesture, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(s_page, on_press, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_page, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_page, on_pressing, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(s_page, on_page_delete, LV_EVENT_DELETE, NULL);
 
     s_canvas = lv_canvas_create(s_page);
@@ -485,6 +541,8 @@ lv_obj_t *muse_game_snake_build(lv_obj_t *tile, void (*on_exit)(void))
     lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(s_canvas, on_gesture, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(s_canvas, on_press, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_canvas, on_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_canvas, on_pressing, LV_EVENT_PRESSING, NULL);
 
     /* Score, top centre. */
     s_score_lbl = lv_label_create(s_page);

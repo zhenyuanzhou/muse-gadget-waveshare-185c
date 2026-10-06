@@ -319,6 +319,53 @@ link.ble: advertising as MuseGadget-XXXXXX         ← BLE 在广播
 原因：之前抓日志的 python 进程没退干净。
 教训：抓串口脚本要设读取时长上限并保证退出；烧录前查进程。
 
+### 7.6 LVGL 8→9：画布（canvas）绘制 API 全变了
+
+现象：新写的游戏模块（muse_game_snake.c）按网上教程用
+`lv_canvas_fill_rect` / `lv_canvas_draw_rect` / `lv_canvas_draw_line`，
+编译直接报 implicit declaration——**这些函数在 v9 里根本不存在**。
+网上的 LVGL 教程大多是 v8 的，照抄必踩。
+
+v9 的正确姿势（三层结构）：
+
+1. **整屏填充**用 `lv_canvas_fill_bg(canvas, color, LV_OPA_COVER)`
+   （v8 的 `lv_canvas_fill_rect` 没了）。
+2. **画形状**要走"图层"：`lv_canvas_init_layer(canvas, &layer)` 开一个
+   `lv_layer_t`，然后用通用绘制函数往图层上画：
+   - 矩形/圆：`lv_draw_rect(&layer, &dsc, &area)`，圆角设
+     `dsc.radius = LV_RADIUS_CIRCLE`， dsc 用 `lv_draw_rect_dsc_init` 初始化；
+   - 线：`lv_draw_line(&layer, &dsc)`，**端点在 dsc 里**
+     （`dsc.p1` / `dsc.p2`，类型 `lv_point_precise_t`），
+     不再像 v8 传 `points[]` 数组 + 点数。
+3. 画完 `lv_canvas_finish_layer(canvas, &layer)` 提交。
+   图层坐标就是画布本地坐标（0,0 起），跟 v8 一致。
+
+结构体字段也变了：v8 的 `lv_draw_rect_dsc_t.opa` 在 v9 拆成了
+`bg_opa` / `border_opa` 等按部件分的透明度。
+
+一句话总结：**v9 画布 = fill_bg + init_layer + lv_draw_* + finish_layer**，
+凡是写着 `lv_canvas_draw_xxx` 的代码都是 v8 的，别信。
+SDK 实际用的是 9.5.0（`components/muse/idf_component.yml` 里 `lvgl/lvgl: "9.5.0"`）。
+
+### 7.7 触屏游戏的手势延迟（贪吃蛇"不跟手"的元凶）
+
+现象：贪吃蛇第一次上手明显"不跟手"，滑了半秒蛇才转向。
+排查后发现是 LVGL 手势机制的固有延迟，不是触摸芯片不灵：
+
+- **要滑满 50px 才算手势**：v9 内置阈值
+  `LV_INDEV_DEF_GESTURE_LIMIT = 50`（indev/lv_indev.c），360px 的屏上
+  等于拖过 3 格多才开始识别；
+- **手势事件在松手那一刻才发**：`LV_EVENT_GESTURE` 是 release 时才触发的，
+  手指一直拖着不动事件就不会来。
+
+对策：游戏别等 GESTURE，自己监听 `LV_EVENT_PRESSED`（记锚点）和
+`LV_EVENT_PRESSING`（每帧对比当前点），位移超过 ~16px 就立刻转向并重设锚点
+——这样拖到一半就转弯，一次拖动还能连续转两次。注意这两个事件会从子控件
+冒泡，回调里要用 `lv_event_get_target()` 过滤掉退出按钮。
+另外把"下一步才转向"改成"安全时立即转向"（上一步已经走完、蛇颈挪开了），
+转向延迟从"最多一个步进周期"缩到接近零。
+改完蛇基本跟着手指走。
+
 ---
 
 ## 8. 案例：给固件加一个新命令（audio.play_url）
