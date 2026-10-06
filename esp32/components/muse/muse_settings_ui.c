@@ -29,6 +29,7 @@
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_game_snake.h"
 #include "muse_input.h"
 #include "muse_keypad.h"
 #include "muse_link.h"
@@ -60,7 +61,7 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_game, *s_sleep, *s_battery, *s_power, *s_text;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -73,7 +74,7 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_game, *s_home_sleep, *s_home_battery, *s_about;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -359,7 +360,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_game, &s_sleep, &s_battery, &s_power, &s_text };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1236,6 +1237,13 @@ static void build_power_page(lv_obj_t *tile)
 
 /* ---------- Home ---------- */
 
+/* The snake game: a full-screen canvas page, dropped like the others when
+ * the user goes back (its PSRAM buffer is freed with it). */
+static void build_game_page(lv_obj_t *tile)
+{
+    s_game = muse_game_snake_build(tile, go_back);
+}
+
 static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
@@ -1243,6 +1251,7 @@ static const page_t SOUND = { &s_sound, build_sound_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
+static const page_t GAME = { &s_game, build_game_page };
 
 static void build_home(lv_obj_t *tile)
 {
@@ -1252,6 +1261,7 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+    row(list, LV_SYMBOL_PLAY, "Snake", &s_home_game, on_nav, (void *)&GAME);
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
@@ -1313,12 +1323,16 @@ void muse_settings_ui_tick(bool visible)
         was_visible = visible;
         /* Only listen to the mic while the Sound page is actually on screen. */
         muse_voice_set_monitor(visible && s_current == s_sound);
+        /* And only run the snake while its page is on screen. */
+        muse_game_snake_set_visible(visible && s_current == s_game);
     }
     if (!visible) {
         return;
     }
     if (s_current == s_home) {
         tick_home();
+    } else if (s_current == s_game) {
+        muse_game_snake_set_visible(true);
     } else if (s_current == s_wifi) {
         tick_wifi();
     } else if (s_current == s_hatch) {
