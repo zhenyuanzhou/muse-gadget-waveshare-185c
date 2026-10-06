@@ -1,0 +1,5 @@
+# This unit ships a 16 MB Winbond flash (probe: 16384k), not the 32 MB
+# the stock sdkconfig.muse-waveshare-s3-175c overlay assumes. Load last.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"

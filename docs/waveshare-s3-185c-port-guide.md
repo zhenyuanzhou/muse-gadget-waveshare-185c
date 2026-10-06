@@ -214,9 +214,6 @@ CONFIG_SPIRAM_MODE_OCT=y / SPEED_80M / FETCH_INSTRUCTIONS / RODATA ...
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2         # 双核各一个 LVGL 绘制单元
 ```
 
-**血泪教训**：别照抄 1.75C overlay 的 `FLASHSIZE_32MB`——那会导致启动时
-`Detected size(16384k) smaller than header(32768k)` 断言重启。
-
 Token 在**首次编译前**写进构建目录的 sdkconfig（不进 git）：
 
 ```bash
@@ -293,7 +290,7 @@ link.ble: advertising as MuseGadget-XXXXXX         ← BLE 在广播
 按**引脚号**解析后对应 TCA9554 的 P0/P1，我当成位掩码用了 P1/P2。
 教训：**别猜宏的语义，先看函数实现。**
 
-### 7.2 幻影触摸（最隐蔽的一个）
+### 7.2 触屏：幻影触摸（最隐蔽的一个）
 
 现象：I2C 通信正常、探针通过、数据也读得到，但屏幕就是点不动。
 原因：无触摸时芯片返回全 0，我的代码没检查触点数量字节，LVGL 收到了
